@@ -10,10 +10,10 @@ warnings.filterwarnings("ignore", message="Mean of empty slice")
 # =============================================================================
 # CONSTANTS - Adjusted for Colab environment
 # =============================================================================
-# Model filenames 
+# Model filenames
 OUTCOME_MODEL_FILENAME = 'outcome_model.joblib'
-GOALS_HOME_MODEL_FILENAME = 'goals_home_model.joblib' 
-GOALS_AWAY_MODEL_FILENAME = 'goals_away_model.joblib' 
+GOALS_HOME_MODEL_FILENAME = 'goals_home_model.joblib'
+GOALS_AWAY_MODEL_FILENAME = 'goals_away_model.joblib'
 LABEL_ENCODER_FILENAME = 'label_encoder.joblib'
 FEATURE_COLS_FILENAME = 'feature_cols.joblib'
 
@@ -86,8 +86,8 @@ def build_features(df):
     df["Form5Ratio"] = cap(df["Form5Ratio"], lo=0.1, hi=10)
 
     # -- Historical expected goals (corrected expanding mean) --
-    # Note: For new predictions, FTHome/FTAway might not be available. 
-    # The training build_features used these to calculate XG. For inference 
+    # Note: For new predictions, FTHome/FTAway might not be available.
+    # The training build_features used these to calculate XG. For inference
     # we rely on 'HomeExpectedGoals'/'AwayExpectedGoals' from raw_row inputs.
     # If you want to use the expanding mean logic, you would need to feed it
     # historical data that includes FTHome/FTAway and apply it iteratively.
@@ -96,7 +96,7 @@ def build_features(df):
         df["HomeXG"] = expanding_team_mean(df, "HomeTeam", "FTHome", default=1.5)
     else:
         df["HomeXG"] = df['HomeExpectedGoals'] # Use provided XG for prediction
-        
+
     if 'FTAway' in df.columns:
         df["AwayXG"] = expanding_team_mean(df, "AwayTeam", "FTAway", default=1.2)
     else:
@@ -199,12 +199,12 @@ def preprocess_input_for_prediction(raw_row: dict) -> pd.DataFrame:
     input_data = raw_row.copy()
     for col in list(DEFAULTS.keys()): # Iterate over keys to set defaults
         input_data.setdefault(col, DEFAULTS[col])
-    
+
     # Create a DataFrame from the raw input and apply feature engineering
     # Note: 'MatchDate' might be missing in a single raw_row for new predictions.
     # Handle this by adding a placeholder if necessary or expect it in raw_row.
     df_raw = pd.DataFrame([input_data])
-    
+
     # Build features using the notebook's logic
     df_processed, _ = build_features(df_raw)
 
@@ -212,7 +212,7 @@ def preprocess_input_for_prediction(raw_row: dict) -> pd.DataFrame:
     for col in FEATURE_COLS:
         if col not in df_processed.columns:
             df_processed[col] = 0.0
-            
+
     return df_processed[FEATURE_COLS].fillna(0)
 
 # =============================================================================
@@ -226,7 +226,7 @@ def predict_matches_colab(new_df: pd.DataFrame) -> pd.DataFrame:
       PredictedHomeGoals    — expected home goals
       PredictedAwayGoals    — expected away goals
       PredictedTotalGoals   — sum
-    
+
     Assumes models and feature_cols are loaded globally.
     """
     if outcome_model is None or goals_home_model is None or goals_away_model is None or label_encoder is None or FEATURE_COLS is None:
@@ -234,7 +234,7 @@ def predict_matches_colab(new_df: pd.DataFrame) -> pd.DataFrame:
         return new_df
 
     new_df = new_df.copy()
-    
+
     # Convert MatchDate if present
     if 'MatchDate' in new_df.columns:
         new_df["MatchDate"] = pd.to_datetime(new_df["MatchDate"], errors="coerce")
@@ -244,7 +244,7 @@ def predict_matches_colab(new_df: pd.DataFrame) -> pd.DataFrame:
     # The build_features function expects a dataframe with 'MatchDate' for temporal features.
     # For new predictions, if 'MatchDate' is not in `new_df`, `build_features` will default 'MatchMonth' and 'MatchDayOfWeek' to 0.
     processed_features, _ = build_features(new_df)
-    
+
     # Ensure the feature matrix for prediction has the exact columns used during training
     X_new = processed_features[FEATURE_COLS].fillna(0)
 
@@ -265,25 +265,3 @@ def predict_matches_colab(new_df: pd.DataFrame) -> pd.DataFrame:
     return new_df
 
 print("Adapted prediction functions loaded. Use `predict_matches_colab(your_dataframe)` to make predictions.")
-
-# --- Demo of the adapted function ---
-print("\n--- Demoing predict_matches_colab with a sample from test data ---")
-# Use 'processed' and 'split_idx' from previous notebook cells
-# Make sure to include all necessary columns expected by build_features, even if empty/0
-sample_data_for_demo = data.iloc[split_idx:split_idx + 5].copy()
-
-# Ensure 'HomeExpectedGoals' and 'AwayExpectedGoals' are present in the sample 
-# if 'FTHome'/'FTAway' are not there, so build_features can use them.
-# For this demo, since 'data' has FTHome/FTAway, build_features will calculate XG.
-# For real new data, you would provide these or other relevant pre-match stats.
-
-preds_colab = predict_matches_colab(sample_data_for_demo)
-
-display_cols_demo = [
-    "MatchDate", "HomeTeam", "AwayTeam", "FTResult",
-    "PredictedOutcome", "ProbA", "ProbD", "ProbH",
-    "PredictedHomeGoals", "PredictedAwayGoals", "PredictedTotalGoals",
-]
-
-print("\nSample predictions vs actuals (using Colab adapted function):")
-print(preds_colab[display_cols_demo].to_string(index=False))
