@@ -1,20 +1,16 @@
 # app.py
-# Streamlit app for Football Match Outcome & Goals Prediction
-# -----------------------------------------------------------
-# This app uses the trained models saved from your notebook:
-# - outcome_model.joblib
-# - goals_home_model.joblib
-# - goals_away_model.joblib
-# - label_encoder.joblib
-# - feature_cols.joblib
-#
-# Run:
-# streamlit run app.py
+# Advanced Football Match Prediction App
+# --------------------------------------
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import joblib
+import requests
+import io
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
+from datetime import datetime
 from math import exp, factorial
 import plotly.graph_objects as go
 
@@ -29,18 +25,28 @@ st.set_page_config(
 )
 
 st.title("⚽ Football Match Prediction App")
+
 st.markdown("""
 Predict:
-- Match Outcome (Home / Draw / Away)
-- Expected Goals
-- Total Goals
-- Scoreline Probabilities
 
-Powered by:
-- XGBoost
-- Poisson Goal Modelling
-- Historical Form & Elo Features
+- Match Winner
+- Draw Probability
+- Expected Goals
+- Most Likely Scorelines
+- Poisson Probabilities
+
+Features are AUTO-generated from:
+- football-data.co.uk
+- ClubElo ratings
+- Historical form
+- Historical goals
 """)
+
+# -----------------------------------------------------------
+# CONSTANTS
+# -----------------------------------------------------------
+
+DEFAULT_ELO = 1500
 
 # -----------------------------------------------------------
 # LOAD MODELS
@@ -48,6 +54,7 @@ Powered by:
 
 @st.cache_resource
 def load_models():
+
     outcome_model = joblib.load("outcome_model.joblib")
     goals_home_model = joblib.load("goals_home_model.joblib")
     goals_away_model = joblib.load("goals_away_model.joblib")
@@ -71,84 +78,321 @@ def load_models():
 ) = load_models()
 
 # -----------------------------------------------------------
+# LOAD FOOTBALL DATA
+# -----------------------------------------------------------
+
+@st.cache_data(show_spinner="Loading football data...")
+def download_football_data():
+
+    base_url = "https://www.football-data.co.uk/"
+    page_url = base_url + "data.php"
+
+    dfs = []
+
+    try:
+
+        response = requests.get(page_url, timeout=20)
+        response.raise_for_status()
+
+        soup = BeautifulSoup(response.content, "html.parser")
+
+        csv_urls = set()
+
+        for link in soup.find_all("a", href=True):
+
+            href = link["href"]
+
+            if href.endswith(".csv"):
+
+                csv_urls.add(urljoin(base_url, href))
+
+        for csv_url in csv_urls:
+
+            try:
+
+                df = pd.read_csv(
+                    csv_url,
+                    encoding="ISO-8859-1",
+                    on_bad_lines="skip"
+                )
+
+                dfs.append(df)
+
+            except Exception:
+                pass
+
+        if not dfs:
+            return pd.DataFrame()
+
+        data = pd.concat(dfs, ignore_index=True)
+
+        data["Date"] = pd.to_datetime(
+            data["Date"],
+            dayfirst=True,
+            errors="coerce"
+        )
+
+        data = data.dropna(subset=["Date"])
+
+        data = data.sort_values("Date")
+
+        return data
+
+    except Exception as e:
+
+        st.error(f"Failed loading football data: {e}")
+
+        return pd.DataFrame()
+
+# -----------------------------------------------------------
+# LOAD ELO
+# -----------------------------------------------------------
+
+@st.cache_data(show_spinner="Loading ClubElo ratings...")
+def load_elo_ratings():
+
+    try:
+
+        date_str = datetime.now().strftime("%Y-%m-%d")
+
+        url = f"http://api.clubelo.com/{date_str}"
+
+        elo_df = pd.read_csv(url)
+
+        elo_df["Clean_Club"] = (
+            elo_df["Club"]
+            .astype(str)
+            .str.strip()
+        )
+
+        return elo_df
+
+    except Exception:
+
+        return pd.DataFrame()
+
+# -----------------------------------------------------------
 # HELPER FUNCTIONS
 # -----------------------------------------------------------
 
+def get_elo(team_name, elo_df):
+
+    if elo_df.empty:
+        return DEFAULT_ELO
+
+    matches = elo_df[
+        elo_df["Clean_Club"]
+        .str.lower()
+        .str.contains(team_name.lower(), na=False)
+    ]
+
+    if matches.empty:
+        return DEFAULT_ELO
+
+    return float(matches["Elo"].iloc[0])
+
+def calculate_form(team_name, data, n=5):
+
+    matches = data[
+        (data["HomeTeam"] == team_name) |
+        (data["AwayTeam"] == team_name)
+    ].copy()
+
+    if matches.empty:
+        return 0
+
+    matches = matches.sort_values(
+        "Date",
+        ascending=False
+    ).head(n)
+
+    points = 0
+
+    for _, row in matches.iterrows():
+
+        if row["HomeTeam"] == team_name:
+
+            if row["FTR"] == "H":
+                points += 3
+
+            elif row["FTR"] == "D":
+                points += 1
+
+        else:
+
+            if row["FTR"] == "A":
+                points += 3
+
+            elif row["FTR"] == "D":
+                points += 1
+
+    return points
+
+def get_goal_stats(team_name, data):
+
+    matches = data[
+        (data["HomeTeam"] == team_name) |
+        (data["AwayTeam"] == team_name)
+    ].copy()
+
+    if matches.empty:
+        return 1.5
+
+    goals = []
+
+    for _, row in matches.iterrows():
+
+        if row["HomeTeam"] == team_name:
+            goals.append(row.get("FTHG", 0))
+        else:
+            goals.append(row.get("FTAG", 0))
+
+    return np.mean(goals)
+
 def poisson_prob(k, lam):
+
     return (exp(-lam) * (lam ** k)) / factorial(k)
 
 def score_matrix(home_xg, away_xg, max_goals=5):
+
     matrix = np.zeros((max_goals + 1, max_goals + 1))
 
     for i in range(max_goals + 1):
+
         for j in range(max_goals + 1):
-            matrix[i, j] = poisson_prob(i, home_xg) * poisson_prob(j, away_xg)
+
+            matrix[i, j] = (
+                poisson_prob(i, home_xg) *
+                poisson_prob(j, away_xg)
+            )
 
     return matrix
 
-def outcome_from_score_matrix(matrix):
-    home_win = np.tril(matrix, -1).sum()
+def outcome_from_matrix(matrix):
+
+    home = np.tril(matrix, -1).sum()
     draw = np.trace(matrix)
-    away_win = np.triu(matrix, 1).sum()
+    away = np.triu(matrix, 1).sum()
 
-    return home_win, draw, away_win
+    return home, draw, away
 
 # -----------------------------------------------------------
-# SIDEBAR INPUTS
+# LOAD DATASETS
 # -----------------------------------------------------------
 
-st.sidebar.header("📊 Match Inputs")
+data = download_football_data()
 
-home_team = st.sidebar.text_input("Home Team", "Manchester City")
-away_team = st.sidebar.text_input("Away Team", "Liverpool")
+elo_df = load_elo_ratings()
 
-st.sidebar.subheader("Elo Ratings")
+if data.empty:
 
-home_elo = st.sidebar.number_input(
-    "Home Elo",
-    min_value=1000,
-    max_value=3000,
-    value=1800
+    st.error("No football data loaded.")
+    st.stop()
+
+all_teams = sorted(
+    pd.concat([
+        data["HomeTeam"],
+        data["AwayTeam"]
+    ]).dropna().unique()
 )
 
-away_elo = st.sidebar.number_input(
-    "Away Elo",
-    min_value=1000,
-    max_value=3000,
-    value=1750
+# -----------------------------------------------------------
+# SIDEBAR
+# -----------------------------------------------------------
+
+st.sidebar.header("⚽ Match Selection")
+
+home_team = st.sidebar.selectbox(
+    "Home Team",
+    all_teams
 )
 
-st.sidebar.subheader("Recent Form")
+away_team = st.sidebar.selectbox(
+    "Away Team",
+    all_teams,
+    index=1
+)
 
-form3_home = st.sidebar.slider("Form3 Home", 0, 15, 7)
-form5_home = st.sidebar.slider("Form5 Home", 0, 15, 10)
+# -----------------------------------------------------------
+# AUTO FEATURES
+# -----------------------------------------------------------
 
-form3_away = st.sidebar.slider("Form3 Away", 0, 15, 6)
-form5_away = st.sidebar.slider("Form5 Away", 0, 15, 9)
+home_elo = get_elo(home_team, elo_df)
+away_elo = get_elo(away_team, elo_df)
 
-st.sidebar.subheader("Expected Goals")
+form3_home = calculate_form(home_team, data, 3)
+form5_home = calculate_form(home_team, data, 5)
 
-home_xg = st.sidebar.slider("Historical Home XG", 0.0, 5.0, 1.8, 0.1)
-away_xg = st.sidebar.slider("Historical Away XG", 0.0, 5.0, 1.2, 0.1)
+form3_away = calculate_form(away_team, data, 3)
+form5_away = calculate_form(away_team, data, 5)
 
-st.sidebar.subheader("Betting Odds")
+home_xg = get_goal_stats(home_team, data)
+away_xg = get_goal_stats(away_team, data)
 
-odd_home = st.sidebar.number_input("Home Win Odds", 1.01, 50.0, 2.00)
-odd_draw = st.sidebar.number_input("Draw Odds", 1.01, 50.0, 3.50)
-odd_away = st.sidebar.number_input("Away Win Odds", 1.01, 50.0, 3.80)
+# -----------------------------------------------------------
+# OPTIONAL USER INPUTS
+# -----------------------------------------------------------
 
-st.sidebar.subheader("Handicap")
+st.sidebar.header("📈 Market Inputs")
 
-handi_size = st.sidebar.slider("Handicap Size", -5.0, 5.0, 0.0, 0.25)
+odd_home = st.sidebar.number_input(
+    "Home Odds",
+    min_value=1.01,
+    max_value=50.0,
+    value=2.00
+)
 
-st.sidebar.subheader("Cluster Features")
+odd_draw = st.sidebar.number_input(
+    "Draw Odds",
+    min_value=1.01,
+    max_value=50.0,
+    value=3.40
+)
 
-c_lth = st.sidebar.number_input("C_LTH", value=0.0)
-c_lta = st.sidebar.number_input("C_LTA", value=0.0)
-c_vhd = st.sidebar.number_input("C_VHD", value=0.0)
-c_vad = st.sidebar.number_input("C_VAD", value=0.0)
-c_htb = st.sidebar.number_input("C_HTB", value=0.0)
-c_phb = st.sidebar.number_input("C_PHB", value=0.0)
+odd_away = st.sidebar.number_input(
+    "Away Odds",
+    min_value=1.01,
+    max_value=50.0,
+    value=3.60
+)
+
+handi_size = st.sidebar.slider(
+    "Handicap",
+    -5.0,
+    5.0,
+    0.0,
+    0.25
+)
+
+# -----------------------------------------------------------
+# AUTO FEATURE DISPLAY
+# -----------------------------------------------------------
+
+st.subheader("📊 Auto-Generated Features")
+
+feature_preview = pd.DataFrame({
+    "Feature": [
+        "Home Elo",
+        "Away Elo",
+        "Home Form (5)",
+        "Away Form (5)",
+        "Home XG",
+        "Away XG"
+    ],
+    "Value": [
+        round(home_elo, 2),
+        round(away_elo, 2),
+        form5_home,
+        form5_away,
+        round(home_xg, 2),
+        round(away_xg, 2)
+    ]
+})
+
+st.dataframe(
+    feature_preview,
+    use_container_width=True
+)
 
 # -----------------------------------------------------------
 # FEATURE ENGINEERING
@@ -159,18 +403,31 @@ elo_ratio = home_elo / away_elo
 
 form3_diff = form3_home - form3_away
 form5_diff = form5_home - form5_away
-form5_ratio = (form5_home + 0.5) / (form5_away + 0.5)
+
+form5_ratio = (
+    (form5_home + 0.5) /
+    (form5_away + 0.5)
+)
 
 xg_diff = home_xg - away_xg
 
-home_attack = home_xg * form5_home / 7.5
-away_attack = away_xg * form5_away / 7.5
+home_attack = (
+    home_xg * form5_home / 7.5
+)
+
+away_attack = (
+    away_xg * form5_away / 7.5
+)
 
 prob_home = 1 / odd_home
 prob_draw = 1 / odd_draw
 prob_away = 1 / odd_away
 
-prob_sum = prob_home + prob_draw + prob_away
+prob_sum = (
+    prob_home +
+    prob_draw +
+    prob_away
+)
 
 prob_home /= prob_sum
 prob_draw /= prob_sum
@@ -178,8 +435,8 @@ prob_away /= prob_sum
 
 odds_edge = prob_home - prob_away
 
-month = 5
-day_of_week = 4
+month = datetime.now().month
+day_of_week = datetime.now().weekday()
 
 input_dict = {
     "HomeElo": home_elo,
@@ -193,11 +450,13 @@ input_dict = {
 
     "Form3Home": form3_home,
     "Form5Home": form5_home,
+
     "Form3Away": form3_away,
     "Form5Away": form5_away,
 
     "HomeXG": home_xg,
     "AwayXG": away_xg,
+
     "XGDiff": xg_diff,
 
     "HomeAttack": home_attack,
@@ -206,6 +465,7 @@ input_dict = {
     "ProbHome": prob_home,
     "ProbDraw": prob_draw,
     "ProbAway": prob_away,
+
     "OddsEdge": odds_edge,
 
     "HandiSize": handi_size,
@@ -213,87 +473,106 @@ input_dict = {
     "MatchMonth": month,
     "MatchDayOfWeek": day_of_week,
 
-    "C_LTH": c_lth,
-    "C_LTA": c_lta,
-    "C_VHD": c_vhd,
-    "C_VAD": c_vad,
-    "C_HTB": c_htb,
-    "C_PHB": c_phb
+    "C_LTH": 0,
+    "C_LTA": 0,
+    "C_VHD": 0,
+    "C_VAD": 0,
+    "C_HTB": 0,
+    "C_PHB": 0
 }
 
-# Ensure all feature columns exist
 for col in FEATURE_COLS:
+
     if col not in input_dict:
         input_dict[col] = 0
 
-X_input = pd.DataFrame([input_dict])[FEATURE_COLS]
+X_input = pd.DataFrame(
+    [input_dict]
+)[FEATURE_COLS]
 
 # -----------------------------------------------------------
-# PREDICTION
+# PREDICT
 # -----------------------------------------------------------
 
 if st.button("🔮 Predict Match"):
 
-    # Outcome prediction
-    outcome_probs = outcome_model.predict_proba(X_input)[0]
-    outcome_pred = outcome_model.predict(X_input)[0]
-    outcome_label = label_encoder.inverse_transform([outcome_pred])[0]
+    outcome_probs = (
+        outcome_model
+        .predict_proba(X_input)[0]
+    )
 
-    # Goals prediction
-    pred_home_goals = float(goals_home_model.predict(X_input)[0])
-    pred_away_goals = float(goals_away_model.predict(X_input)[0])
+    outcome_pred = (
+        outcome_model
+        .predict(X_input)[0]
+    )
 
-    pred_home_goals = max(0, pred_home_goals)
-    pred_away_goals = max(0, pred_away_goals)
+    outcome_label = (
+        label_encoder
+        .inverse_transform([outcome_pred])[0]
+    )
 
-    total_goals = pred_home_goals + pred_away_goals
+    pred_home_goals = max(
+        0,
+        float(goals_home_model.predict(X_input)[0])
+    )
 
-    # Score probabilities
-    matrix = score_matrix(pred_home_goals, pred_away_goals)
+    pred_away_goals = max(
+        0,
+        float(goals_away_model.predict(X_input)[0])
+    )
 
-    home_win_prob, draw_prob, away_win_prob = outcome_from_score_matrix(matrix)
+    total_goals = (
+        pred_home_goals +
+        pred_away_goals
+    )
+
+    matrix = score_matrix(
+        pred_home_goals,
+        pred_away_goals
+    )
+
+    home_prob, draw_prob, away_prob = (
+        outcome_from_matrix(matrix)
+    )
 
     # -------------------------------------------------------
-    # DISPLAY RESULTS
+    # RESULTS
     # -------------------------------------------------------
 
-    st.header(f"🏟️ {home_team} vs {away_team}")
+    st.header(
+        f"🏟️ {home_team} vs {away_team}"
+    )
 
-    col1, col2, col3 = st.columns(3)
+    c1, c2, c3 = st.columns(3)
 
-    with col1:
-        st.metric(
-            "🏠 Expected Home Goals",
-            f"{pred_home_goals:.2f}"
-        )
+    c1.metric(
+        "🏠 Home Goals",
+        f"{pred_home_goals:.2f}"
+    )
 
-    with col2:
-        st.metric(
-            "⚽ Expected Total Goals",
-            f"{total_goals:.2f}"
-        )
+    c2.metric(
+        "⚽ Total Goals",
+        f"{total_goals:.2f}"
+    )
 
-    with col3:
-        st.metric(
-            "🚗 Expected Away Goals",
-            f"{pred_away_goals:.2f}"
-        )
+    c3.metric(
+        "🚗 Away Goals",
+        f"{pred_away_goals:.2f}"
+    )
 
     st.divider()
 
     # -------------------------------------------------------
-    # OUTCOME PROBABILITIES
+    # OUTCOME CHART
     # -------------------------------------------------------
 
-    st.subheader("📈 Match Outcome Probabilities")
-
     outcome_df = pd.DataFrame({
-        "Outcome": ["Home Win", "Draw", "Away Win"],
-        "Probability": [
-            outcome_probs[0],
-            outcome_probs[1],
-            outcome_probs[2]
-        ]
+        "Outcome": [
+            "Home Win",
+            "Draw",
+            "Away Win"
+        ],
+        "Probability": outcome_probs
     })
 
     fig = go.Figure()
@@ -304,55 +583,65 @@ if st.button("🔮 Predict Match"):
     ))
 
     fig.update_layout(
-        height=400,
-        yaxis_title="Probability",
-        xaxis_title="Outcome"
+        height=400
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(
+        fig,
+        use_container_width=True
+    )
 
     # -------------------------------------------------------
-    # FINAL PREDICTION
+    # FINAL RESULT
     # -------------------------------------------------------
-
-    st.subheader("🎯 Final Prediction")
 
     if outcome_label == "H":
-        final_result = f"{home_team} WIN"
+
+        final_result = (
+            f"{home_team} WIN"
+        )
+
     elif outcome_label == "D":
+
         final_result = "DRAW"
+
     else:
-        final_result = f"{away_team} WIN"
+
+        final_result = (
+            f"{away_team} WIN"
+        )
 
     st.success(final_result)
 
-    st.write(f"""
-    ### Model Summary
-    - Home Win Probability: **{outcome_probs[0]:.2%}**
-    - Draw Probability: **{outcome_probs[1]:.2%}**
-    - Away Win Probability: **{outcome_probs[2]:.2%}**
-    """)
-
     # -------------------------------------------------------
-    # SCORE MATRIX
+    # SCORELINES
     # -------------------------------------------------------
 
-    st.subheader("📋 Most Likely Scorelines")
+    st.subheader(
+        "📋 Most Likely Scorelines"
+    )
 
-    score_probs = []
+    scores = []
 
     for i in range(6):
+
         for j in range(6):
-            score_probs.append({
-                "Score": f"{i} - {j}",
+
+            scores.append({
+                "Score": f"{i}-{j}",
                 "Probability": matrix[i, j]
             })
 
-    score_df = pd.DataFrame(score_probs)
-    score_df = score_df.sort_values(
-        by="Probability",
-        ascending=False
-    ).head(10)
+    score_df = pd.DataFrame(scores)
+
+    score_df = (
+        score_df
+        .sort_values(
+            "Probability",
+            ascending=False
+        )
+        .head(10)
+    )
 
     score_df["Probability"] = (
         score_df["Probability"] * 100
@@ -364,38 +653,25 @@ if st.button("🔮 Predict Match"):
     )
 
     # -------------------------------------------------------
-    # IMPLIED RESULT FROM POISSON MATRIX
+    # FEATURE TABLE
     # -------------------------------------------------------
 
-    st.subheader("📊 Poisson Score Model")
+    with st.expander(
+        "🧠 Features Used"
+    ):
 
-    poisson_df = pd.DataFrame({
-        "Result": ["Home Win", "Draw", "Away Win"],
-        "Probability": [
-            home_win_prob,
-            draw_prob,
-            away_win_prob
-        ]
-    })
-
-    poisson_df["Probability"] = (
-        poisson_df["Probability"] * 100
-    ).round(2)
-
-    st.dataframe(poisson_df, use_container_width=True)
-
-    # -------------------------------------------------------
-    # FEATURE VIEW
-    # -------------------------------------------------------
-
-    with st.expander("🧠 Engineered Features Used"):
-
-        feature_view = pd.DataFrame({
+        features_df = pd.DataFrame({
             "Feature": FEATURE_COLS,
-            "Value": [input_dict[c] for c in FEATURE_COLS]
+            "Value": [
+                input_dict[c]
+                for c in FEATURE_COLS
+            ]
         })
 
-        st.dataframe(feature_view, use_container_width=True)
+        st.dataframe(
+            features_df,
+            use_container_width=True
+        )
 
 # -----------------------------------------------------------
 # FOOTER
@@ -403,11 +679,10 @@ if st.button("🔮 Predict Match"):
 
 st.divider()
 
-st.markdown(
-    """
+st.markdown("""
 ### 📦 Required Files
 
-Place these files in the same folder as `app.py`:
+Place these files beside app.py:
 
 - outcome_model.joblib
 - goals_home_model.joblib
@@ -415,8 +690,7 @@ Place these files in the same folder as `app.py`:
 - label_encoder.joblib
 - feature_cols.joblib
 
-### ▶️ Run App
+### ▶️ Run
 
 streamlit run app.py
-"""
-)
+""")
