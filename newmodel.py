@@ -403,7 +403,8 @@ if st.button("🔮 Predict Match"):
 
 st.divider()
 
-st.markdown("""
+st.markdown(
+    """
 ### 📦 Required Files
 
 Place these files in the same folder as `app.py`:
@@ -416,5 +417,6 @@ Place these files in the same folder as `app.py`:
 
 ### ▶️ Run App
 
-```bash
 streamlit run app.py
+"""
+)
