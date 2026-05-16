@@ -1,10 +1,12 @@
 streamlit
 pandas
 numpy
-scikit-learn
-xgboost
 joblib
 plotly
-matplotlib
+requests
+beautifulsoup4
+scikit-learn
+xgboost
+scipy
 seaborn
 beautifulsoup4
