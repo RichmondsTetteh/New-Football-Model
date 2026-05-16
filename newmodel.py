@@ -126,7 +126,7 @@ def outcome_from_score_matrix(matrix):
 # =============================================================================
 # FOOTBALL-DATA.CO.UK DATA LOADING (from second app)
 # =============================================================================
-@st.cache_data(show_spinner=False, ttl=3600) # Cache for 1 hour
+@st.cache_data(show_spinner="Fetching ELO ratings...", ttl=3600) # Cache for 1 hour
 def download_and_merge_football_data():
     """Downloads and merges football data from football-data.co.uk."""
     base_url = "https://www.football-data.co.uk/"
@@ -526,9 +526,9 @@ if st.session_state.fd_analysis_done and st.session_state.fd_results and \
 # Actual Sidebar Input Fields (now using session_state for default values)
 
 st.sidebar.subheader("Elo Ratings")
-home_elo = st.sidebar.number_input("Home Elo", min_value=1000, max_value=3000,
+home_elo = st.sidebar.number_input("Home Elo", min_value=1000.0, max_value=3000.0,
                                    value=float(st.session_state.inputs['HomeElo'] if 'HomeElo' in st.session_state.inputs else APP_DEFAULTS['HomeElo']))
-away_elo = st.sidebar.number_input("Away Elo", min_value=1000, max_value=3000,
+away_elo = st.sidebar.number_input("Away Elo", min_value=1000.0, max_value=3000.0,
                                    value=float(st.session_state.inputs['AwayElo'] if 'AwayElo' in st.session_state.inputs else APP_DEFAULTS['AwayElo']))
 st.session_state.inputs['HomeElo'] = home_elo # Update session state on widget change
 st.session_state.inputs['AwayElo'] = away_elo
