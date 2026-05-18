@@ -870,8 +870,6 @@ st.markdown(
     
 ### 📦 Required Files
 
-Place these files in the same folder as `app.py`:
-
 - outcome_model.joblib
 - goals_home_model.joblib
 - goals_away_model.joblib
