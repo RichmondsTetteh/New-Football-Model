@@ -867,7 +867,7 @@ if predict_clicked:
 st.divider()
 
 st.markdown(
-    """
+    
 ### 📦 Required Files
 
 Place these files in the same folder as `app.py`:
