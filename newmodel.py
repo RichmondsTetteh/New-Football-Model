@@ -878,10 +878,6 @@ Place these files in the same folder as `app.py`:
 - label_encoder.joblib
 - feature_cols.joblib
 
-### ▶️ Run App
-
-streamlit run app.py
-"""
 )
 
 # Initial info message if no analysis has been done
