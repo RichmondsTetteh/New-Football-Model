@@ -866,7 +866,7 @@ if predict_clicked:
 
 st.divider()
 
-st.markdown(
+st.markdown("""
     
 ### 📦 Required Files
 
@@ -876,7 +876,7 @@ st.markdown(
 - label_encoder.joblib
 - feature_cols.joblib
 
-)
+""")
 
 # Initial info message if no analysis has been done
 if not st.session_state.fd_analysis_done and not predict_clicked:
